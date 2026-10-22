@@ -27,15 +27,19 @@ permissions:
   packages: write       # push to ghcr.io
   id-token: write       # cosign keyless via GitHub OIDC
 
+# Queue, never cancel: a run cancelled between push and sign would leave an unsigned tag in GHCR.
 concurrency:
   group: eaglebyte-release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/theeaglebyte/littlelink-server
 
 jobs:
   build-sign-push:
+    # workflow_dispatch can target any branch, but only a main run carries the signing identity
+    # Kyverno accepts -- anything else would publish an image the cluster refuses.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       # Every action pinned to a commit SHA, not a tag: a tag is mutable, and this job holds
@@ -43,7 +47,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 0              # gitleaks scans history
+          persist-credentials: false  # nothing later needs authenticated git
 
       - name: gitleaks (gate)
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
@@ -64,13 +69,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        id: build
+      # Build into the local daemon only -- nothing is published until the Trivy gate passes, so a
+      # failed scan leaves no tag behind in GHCR.
+      - name: Build (local, not pushed)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ./Dockerfile
-          push: true
+          load: true
+          push: false
           tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
           provenance: false     # Kyverno resolves tag->digest and expects an image, not an index
           cache-from: type=gha
@@ -79,11 +86,23 @@ jobs:
       - name: Trivy scan (gate)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          # Scan BY DIGEST so the scanned image is provably the built one.
-          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          image-ref: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
           exit-code: '1'
           severity: 'HIGH,CRITICAL'
           format: 'table'
+
+      # Push the exact local image that was scanned, then take its registry digest for signing.
+      - name: Push
+        id: build
+        run: |
+          docker push "${IMAGE}:${TAG}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${TAG}")"
+          digest="${digest##*@}"
+          case "$digest" in sha256:*) ;; *) echo "::error::no registry digest after push"; exit 1 ;; esac
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
