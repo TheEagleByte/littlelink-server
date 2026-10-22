@@ -35,6 +35,10 @@ ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 ENV NEXT_TELEMETRY_DISABLED=1
+# Strip npm and corepack from the runtime image. Nothing here runs them -- the entrypoint is
+# `node server.js` and every install happened in earlier stages. npm vendors its own dependency
+# tree, which scanners flag even though it is never executed; removing it beats suppressing them.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx            /usr/local/lib/node_modules/corepack /usr/local/bin/corepack
 COPY --from=node-build --chown=node:node /usr/src/app/.next/standalone ./
 COPY --from=node-build --chown=node:node /usr/src/app/.next/static ./.next/static
 COPY --from=node-build --chown=node:node /usr/src/app/public ./public

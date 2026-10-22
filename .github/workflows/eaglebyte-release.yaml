@@ -1,0 +1,131 @@
+# TheEagleByte fork only -- NOT for upstream. Builds, scans, signs and publishes
+# ghcr.io/theeaglebyte/littlelink-server for links.greyman.network.
+#
+# Why a fork build at all: upstream's published image still runs Node 24.18.0 (its Dockerfile tag
+# says 26.12.1 but the pinned digest is 24.18.0 -- timothystewart6/littlelink-server#925), and
+# custom buttons ignore BUTTON_ORDER (#926). This fork carries both fixes until upstream merges
+# them; after that, the cluster can go back to upstream's image by digest.
+#
+# Named eaglebyte-release.yaml, not release.yaml, so syncing from upstream never conflicts with it.
+# Upstream's own publish workflows (main.yml, build-and-push.yml) are DISABLED in this fork: they
+# push to upstream's registry namespaces and would only fail here.
+#
+# Holds ZERO cluster credentials -- it ends at the registry. Flux pulls from there and Kyverno
+# verifies the signature at admission. Signing is cosign KEYLESS; the cluster's
+# ImageValidatingPolicy pins issuer = GitHub Actions OIDC and subject =
+#   https://github.com/TheEagleByte/<repo>/.github/workflows/<file>@refs/heads/main
+# so renaming this file or releasing from another branch changes the identity and is refused.
+name: eaglebyte-release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write       # push to ghcr.io
+  id-token: write       # cosign keyless via GitHub OIDC
+
+concurrency:
+  group: eaglebyte-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/theeaglebyte/littlelink-server
+
+jobs:
+  build-sign-push:
+    runs-on: ubuntu-latest
+    steps:
+      # Every action pinned to a commit SHA, not a tag: a tag is mutable, and this job holds
+      # packages:write and id-token:write.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks (gate)
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute sortable tag
+        id: tag
+        run: echo "tag=main-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+          provenance: false     # Kyverno resolves tag->digest and expects an image, not an index
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan (gate)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          # Scan BY DIGEST so the scanned image is provably the built one.
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          format: 'table'
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign (keyless, by digest)
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Verify our own signature (fail fast here, not at cluster admission)
+        # Retried because verification fetches Sigstore's trust root over the network and a single
+        # CDN read flakes periodically. A genuine identity mismatch still fails all three attempts.
+        run: |
+          for attempt in 1 2 3; do
+            if cosign verify \
+                 --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                 --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/eaglebyte-release.yaml@refs/heads/main" \
+                 "${IMAGE}@${DIGEST}"; then
+              echo "verified on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::cosign verify attempt ${attempt} failed"
+            sleep $((attempt * 10))
+          done
+          echo "::error::cosign verify failed after 3 attempts"
+          exit 1
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo ""
+            echo '```'
+            echo "${IMAGE}:${TAG}"
+            echo "${IMAGE}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
