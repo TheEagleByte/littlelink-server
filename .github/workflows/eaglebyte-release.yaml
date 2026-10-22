@@ -91,12 +91,15 @@ jobs:
           severity: 'HIGH,CRITICAL'
           format: 'table'
 
-      # Push the exact local image that was scanned, then take its registry digest for signing.
-      - name: Push
+      # Push the exact local image that was scanned under a STAGING tag and take its registry digest.
+      # The release tag (main-*, the one Flux and gitops reference) is only added after the digest is
+      # signed and verified, so a failed sign or verify never leaves an unsigned release tag behind.
+      - name: Push (staging tag)
         id: build
         run: |
-          docker push "${IMAGE}:${TAG}"
-          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${TAG}")"
+          docker tag "${IMAGE}:${TAG}" "${IMAGE}:staging-${TAG}"
+          docker push "${IMAGE}:staging-${TAG}"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:staging-${TAG}")"
           digest="${digest##*@}"
           case "$digest" in sha256:*) ;; *) echo "::error::no registry digest after push"; exit 1 ;; esac
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
@@ -132,6 +135,21 @@ jobs:
           exit 1
         env:
           IMAGE: ${{ env.IMAGE }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Publish release tag (only after sign + verify)
+        # Same local image, same repo: the push re-uses the already-uploaded manifest, so the release
+        # tag must resolve to the signed digest. Checked explicitly rather than assumed.
+        run: |
+          docker push "${IMAGE}:${TAG}"
+          tagged="$(docker buildx imagetools inspect "${IMAGE}:${TAG}" --format '{{.Manifest.Digest}}')"
+          if [ "${tagged}" != "${DIGEST}" ]; then
+            echo "::error::${IMAGE}:${TAG} resolves to ${tagged}, not the signed ${DIGEST}"
+            exit 1
+          fi
+        env:
+          IMAGE: ${{ env.IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
           DIGEST: ${{ steps.build.outputs.digest }}
 
       - name: Summary
