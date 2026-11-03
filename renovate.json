@@ -1,5 +1,75 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>TheEagleByte/gitops//renovate/default"],
-  "forkProcessing": "enabled"
+  "description": [
+    "Copy of the shared preset in TheEagleByte/gitops (renovate/default.json), inlined here on purpose.",
+    "This repo is a public fork, and Renovate will not load a preset from the private gitops repo into a public one: it stopped with 'Cannot find preset' and paused all PRs (Nov 1 2026).",
+    "Keep this in step with the shared preset by hand when that one changes.",
+    "Automerge policy (Garrett, Nov 2 2026): security, patch and minor updates automerge once every status check is green; majors and 0.x minors wait for a human."
+  ],
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "forkProcessing": "enabled",
+  "timezone": "America/New_York",
+  "schedule": ["* 22-23 * * *", "* 0-7 * * *"],
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 5,
+  "assignees": ["TheEagleByte"],
+  "labels": ["dependencies"],
+  "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes skip the schedule, the 3-day release-age wait and the hourly limit, and are created immediately.",
+    "enabled": true,
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null,
+    "prHourlyLimit": 0,
+    "labels": ["dependencies", "security"]
+  },
+  "lockFileMaintenance": {
+    "description": "Weekly lockfile refresh so transitive dependencies don't age silently.",
+    "enabled": true,
+    "schedule": ["* 0-7 * * 1"]
+  },
+  "packageRules": [
+    {
+      "description": "Supply-chain guard: hold new npm releases for 3 days. Security fixes are exempt via vulnerabilityAlerts above.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "3 days",
+      "internalChecksFilter": "strict"
+    },
+    {
+      "description": "Pin container images by digest where they run and keep the digest moving with the tag. Compose files are dev-only and left on tags.",
+      "matchDatasources": ["docker"],
+      "matchManagers": ["dockerfile", "kubernetes", "helm-values", "github-actions"],
+      "pinDigests": true
+    },
+    {
+      "description": "Majors get their own label so they stand out.",
+      "matchUpdateTypes": ["major"],
+      "labels": ["dependencies", "major"]
+    },
+    {
+      "description": "Automerge patch, pin, digest and lockfile updates once CI is green. Renovate merges the PR itself so it always waits for status checks.",
+      "matchUpdateTypes": ["patch", "pin", "pinDigest", "digest", "lockFileMaintenance"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
+    },
+    {
+      "description": "Automerge minor updates of stable (1.0+) packages once CI is green. 0.x minors stay manual.",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "!/^v?0\\./",
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false
+    },
+    {
+      "description": "Never automerge majors, including security fixes that need one.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    }
+  ]
 }
