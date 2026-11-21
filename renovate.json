@@ -70,6 +70,11 @@
       "description": "Never automerge majors, including security fixes that need one.",
       "matchUpdateTypes": ["major"],
       "automerge": false
+    },
+    {
+      "description": "Keep the Playwright test runner and the e2e container image (full-env-e2e.yml) in one PR. The runner looks for browsers built for its own version, so bumping @playwright/test alone fails e2e with 'Executable doesn't exist' (PR 13, Nov 2026). Same groupName as Renovate's playwright monorepo group, so the existing branch picks the image up.",
+      "matchPackageNames": ["@playwright/test", "playwright", "playwright-core", "mcr.microsoft.com/playwright"],
+      "groupName": "playwright monorepo"
     }
   ]
 }
